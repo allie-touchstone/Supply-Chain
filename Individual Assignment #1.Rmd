@@ -1,0 +1,173 @@
+---
+title : "Individual Assignment #1" 
+output: html_notebook
+---
+***
+<center>
+## Individual Assignment #1: ETS Laboratory
+#### Due: Nov. 4 (Before Class)
+#### Allie Touchstone
+#### (40 points)
+</center>
+***
+
+You have been hired by a company in the hospitality business to help them plan the staffing levels for the following year.  The company operates resorts in three regions of the New South Wales of Australia; the three regions are the **Sydney**, the **South Coast** and the **North Coast NSW** areas.
+
+As it takes time to hire new personnel and it is necessary for any new employee to undergo a detailed training program before starting to work, the company needs to plan its personnel requirements one year in advance.  Furthermore, as it is possible for the company to transfer qualified personnel between regions, they are interested only in an aggregate forecast of their demand 
+
+As the company caters to **Holiday** travelers, and it has been growing faster than the market (i.e., it has been gaining market share), the Chief Commercial Officer estimates that next year they will have respectively (3%, 4%, 4%) of only the **Holiday** travelers in the (**Sydney**, **South Coast**, and **North Coast NSW**) regions respectively.  Furthermore based on prior experience they anticipate that each traveler will stay respectively (5,2,2) hotel-nights in (**Sydney**, **South Coast**, and **North Coast NSW**) respectively
+
+To forecast demand in hotel-nights use the **tourism** data set in **fpp3**.  This data set reports the quarterly trips (in thousands) to different destinations, and as this data set has a *tsibble* structure, you can use **tidyverse** functions to subset the time-series of interest.  
+
+For the purposes of this assignment ignore all data before **2008 Q1** and use the data from **2008 Q1** through **2016 Q4** as a traing set and the four quarters of **2017** as a testing set.
+
+If you need to dust-off the tidyverse functions, a good reference is the electronic book [*R for Data Science*](https://r4ds.had.co.nz/)  or alternatively, if you only need a quick refresher of the **dplyr** and **tidyr**   functions you can use the following [*Data Wrangling Cheat Sheet*](https://rstudio.com/wp-content/uploads/2015/02/data-wrangling-cheatsheet.pdf)
+
+
+### Part I.  Model-Aggregation Forecast 
+
+1. After subsetting for the time-series of interest in the **tourism** data set (a *tsibble*), add to the restricted set the corresponding demand time-series, by creating a column called *Demand*  for each of the corresponding regions of interest.  The *Demand* column should contain the hotel-nights (in thousands) corresponding to each of the *Trips* observations. After creating the *Demand* column, fit automatically the best **ETS** model for each *Demand* time-series. In addition to the automatic fit, one of your colleagues suggest that you should try the "AAM" model and the "AAdM" models as they may be preferred under the *BIC* criterion.  Report for each region the best model as well as the corresponding *AICc* and *BIC*. What is the best model according to the information criteria?
+
+```{r}
+library(fpp3)
+
+# Subset the appropriate data and create the "Demand" time-series
+tourism %>% 
+  filter(Quarter >= yearquarter("2008 Q1")) %>%
+  filter(Purpose == "Holiday" & State == "New South Wales") %>%
+  filter(Region %in% c("North Coast NSW","South Coast","Sydney")) %>%
+  mutate(Demand = case_when(
+    Region == "Sydney" ~ 0.03*Trips*5,
+    Region == "South Coast" ~ 0.04*Trips*2,
+    Region == "North Coast NSW" ~ 0.04*Trips*2
+  )) -> D
+
+# Break into Training and Testing sets
+DTR <- D %>% filter(Quarter <= yearquarter("2016 Q4"))
+DTE <- D %>% filter(Quarter >= yearquarter("2017 Q1"))
+
+# Creating the models
+m <- DTR %>%  
+  model(m.auto = ETS(Demand),
+        m.AAM  = ETS(Demand ~ error("A") + trend("A") + season("M")),
+        m.AAdM = ETS(Demand ~ error("A") + trend("Ad") + season("M")))
+m %>% tidy()
+m %>% 
+  glance() %>%
+  select(Region, .model, AICc, BIC) 
+```
+According to the information criteria, the automatic model is the best fit. This is because the automatic model produced the lowest AICc's and the lowest BIC's in all the regions we were considering.
+
+
+2. Using the best model selected in (1), prepare a forecast for the four quarters of 2017 and report for each time series the in-sample (training) MAPE, and out-of-sample (testing) MAPE.  
+``` {r}
+# Applying the best model from above
+mbest = DTR %>% model(m.auto = ETS(Demand))
+# Forecasting for 4 quarters
+f <- mbest  %>% forecast (h = 4)
+# Reporting the time series 
+rbind(mbest %>% accuracy(),           # in-sample
+          f %>% accuracy(data = DTE)) %>% # out-sample
+  select(Region, .model, .type, MAPE) 
+```
+
+
+3. Add the three forecasts of each region for the selected model to obtain the total forecast and compute the fitted (training) MAPE and the testing MAPE.  Compare the MAPEs of the aggregate forecasts with those of the regional forecasts.  Which ones are larger/smaller? Explain why did you obtain these results.
+``` {r}
+mg <- mbest %>% augment()
+group_train <- DTR %>% index_by(Quarter) %>% summarize( D = sum(Demand)) 
+group_test <- DTE %>% index_by(Quarter) %>% summarize( D = sum(Demand))
+f1 <- f %>% index_by(Quarter) %>% summarize(Sum = sum(.mean)) # predicted 
+cat('MAPE of training data:', MAPE(f1$Sum - (group_train$D), group_train$D),'\n')
+cat('MAPE of testing data: ',MAPE(f1$Sum - (group_test$D), group_test$D))
+```
+The MAPE's were smaller in the aggregate forecasts. This was because we indexed the data on the aggregate functions, which gave a better (lower) solution.
+
+### Part II. Data-Aggregation Forecast
+
+4. Now aggregate the region-specific demand data to compile an aggregate demand time series, the aggregated demand into training and testing time-series, and fit the automatic model, plus the two models you fitted in Question (1)  What is the best model for the aggregate data?
+``` {r}
+m2 <- group_train %>%  
+  model(m.auto = ETS(D),
+      m.AAM = ETS(D ~ error("A") + trend("A") + season("M")),
+      m.AAdM = ETS(D ~ error("A") + trend("Ad") + season("M")))
+f2 <- m2  %>% forecast (h = 4)
+rbind(m2 %>% accuracy(), 
+      f2 %>% accuracy(data = group_test)) %>%
+  select( .model, .type, MAPE) 
+```
+The best model for the aggregate data is the automatic model. In the test data, the automatic model gave a significantly lower MAPE, and while the automatic model did not have the lowest MAPE for the training data, it was very close to the lowest MAPE value. 
+
+5. Using the best model selected in (4), prepare a forecast for the four quarters of 2017 and report the in-sample (training) MAPE, and out-of-sample (testing) MAPE. 
+``` {r}
+f2 <- m2  %>% forecast (h = 4)
+  
+rbind(m2 %>% accuracy(), 
+      f2 %>% accuracy(data = group_test)) %>%
+  select( .model, .type, MAPE) %>% filter(.model == "m.auto")
+```
+The in-sample MAPE is 4.62, and the out-sample MAPE is 5.16.
+
+### Part III. Forecasting Model Analysis and Aggregate Forecast
+
+6. Using the best modeling approach (model-aggregation vs data-aggregation) and the best ETS model(s) selected, and using all the data available fit the model(s), report the model parameters, the in-sample MAPE, and plot the forecast for the four quarters of 2018.
+```{r warning=FALSE}
+# auto was best in both cases
+# the best models are ETS(M,N,M) and ETS(A,N,A)
+
+m3 <- D %>% index_by(Quarter) %>% summarize( D = sum(Demand))
+m4 <- m3 %>%  
+  model(m.auto = ETS(D))
+f4 <- m4  %>% forecast (h = 4)
+m4 %>% accuracy()
+
+f4 %>% autoplot(m3) +
+  geom_point(data = m4 %>% augment(), mapping = aes(y = .fitted), col = "blue")
+
+rbind(m4 %>% accuracy(), 
+      f4 %>% accuracy(data = group_test)) %>%
+  select( .model, .type, MAPE) %>% filter(.model == "m.auto")
+```
+Automatic was best in both model in both the model-aggregation and the  data-aggregation approach. The ETS models used that were selected were ETS(M,N,M) and ETS(A,N,A). The model parameters were the quarters in 2008 though quarter 1 in 2018. The in-sample MAPE is 4.632.
+
+7. As it is very costly to be short of personnel, we need to plan the staffing levels according to a forecast that we anticipate it will not be exceeded with a probability of 99%.  What are these quarterly demand levels?
+
+```{r}
+f4 %>% 
+  filter(.model == "m.auto") %>%
+  hilo(level =c(99,100)) %>% # high - low function
+  unpack_hilo("99%") %>%
+  select(Quarter, "99%_upper")
+```
+The above tsibble gives the quarterly demands of visitors when using the 99% level. The 99% upper number is how many visitors expected in the associated quarter of 2018. 
+
+8. Sometimes not all the data available is representative of the recent and future business conditions.  Redefine the training data set *** DTR*** to exclude all data older than 2010 and reevaluate your recommendation in Questions (6) and (7).
+
+```{r}
+DTR <- D %>% 
+  filter(Quarter >= yearquarter("2010 Q1"),
+         Quarter <= yearquarter("2016 Q4"))
+
+m5 <- DTR %>% index_by(Quarter) %>% summarize(D = sum(Demand))
+m6 <- m5 %>%  model(m.auto = ETS(D))
+f6 <- m6  %>% forecast(h = 4)
+
+m6 %>% accuracy()
+
+f6 %>% autoplot(m5) +
+  geom_point(data = m6 %>% augment(), mapping = aes(y = .fitted), col = "blue")
+
+rbind(m6 %>% accuracy(), 
+      f6 %>% accuracy(data = group_test)) %>%
+  select( .model, .type, MAPE) %>% filter(.model == "m.auto")
+
+f6 %>% 
+  filter(.model == "m.auto") %>%
+  hilo(level =c(99,100)) %>% # high - low function
+  unpack_hilo("99%") %>%
+  select(Quarter, "99%_upper")
+```
+Once the data from 2010 and before was removed, the best model is the same as one of the best models from question 6, ETS(A,N,A). The in-sample is now 4.51, which is lower than the in-sample before. Additionally, there are an average of 10 (thousand) less visitors predicted in each quarter. 
+
+
+

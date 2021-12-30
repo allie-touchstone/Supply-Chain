@@ -1,0 +1,179 @@
+---
+title : "Individual Assignment 2" 
+output: html_notebook
+---
+***
+<center>
+## Individual Assignment #2: ARIMA Lab.
+#### Due: Nov. 23 before class time
+#### Allie Touchstone
+#### (40 points)
+</center>
+***
+
+The file titled **US Electricity.csv** includes a time series index compiled by the US Federal Reserve representing total fossil-fuel US electricity generation by all utilities from January 1939 through October 2021.
+
+In the following code box we read the CSV file and set up the data as a *tsibble* and then we plot it and subset it to examine it.
+
+```{r}
+library(fpp3)
+
+D <- read.csv("US Electricity.csv") %>% 
+  mutate(DATE = yearmonth(DATE)) %>%
+  as_tsibble(index = DATE)
+  
+D %>% autoplot(ELEC)
+
+DR <- D %>% filter(DATE >= yearmonth("2010 Jan"))
+
+DR %>% autoplot(ELEC)
+```
+
+We are interested in developing a two-year long monthly forecast (24 months) for the national electricity production requirements. 
+
+
+1. Examine the stationarity of the **ELEC** time series in the reduced **DR** data, examine also the corresponding ACF and PACF diagrams and propose three plausible ARIMA models to fit the data.
+```{r warning=FALSE}
+library(fpp3)
+library(tseries)
+
+DR %>% 
+  mutate(diff.E = difference(ELEC),
+         diff2.E = difference(diff.E)) -> D_diff
+
+D_diff %>% features(ELEC, unitroot_kpss)
+D_diff %>% features(diff.E, unitroot_kpss)
+
+D_diff %>% features(ELEC, unitroot_ndiffs)
+
+D_diff %>% autoplot(.vars = ELEC)
+D_diff %>% autoplot(.vars = diff.E)
+
+# Examine Stationarity Visually
+D_diff %>% ACF(ELEC) %>% 
+  autoplot() + 
+  labs(title = "ELEC")
+D_diff %>% ACF(diff.E) %>% 
+  autoplot() + 
+  labs(title = "diff.E")
+
+D_diff$ELEC%>% adf.test()
+
+D_diff$diff.E %>%
+  na.omit() %>%
+  adf.test()
+
+D_diff %>% gg_tsdisplay(ELEC, plot_type = "partial")  
+D_diff %>% gg_tsdisplay(diff.E, plot_type = "partial")
+
+```
+stationarity: The data is stationary after 1 difference.
+
+Models: ARIMA(1,0,0) (2,1,0)[12], 
+        ARIMA(0,0,0)(2,1,1)[12], 
+        ARIMA(0,1,0)(2,1,0)[12]
+
+2. Using **fable** fit the following five models to the **DR** data: (i)-(iii) the three models you propose in (1), (iv) the automatically selected model by the ARIMA() functionn, and (v) the automatically selected model by the ETS() function.  Report the name/order of each model and the corresponding AICc and BIC.
+```{r}
+m <- DR %>% model(
+                 m1 = ARIMA(ELEC ~ pdq(1,0,0)),
+                 m2 = ARIMA(ELEC ~ pdq(0,0,1) ),
+                 m3 = ARIMA(ELEC ~ pdq(0,1,0) ),
+                 m4 = ARIMA(ELEC),
+                 m5 = ETS(ELEC))
+
+m %>% glance() %>%
+  select(.model, AIC, AICc, BIC)
+```
+
+
+3. Examine the residuals of all the models using the Ljung-Box test and the **gg_tsresiduals()** function. Is there a validity problem with any of the models?
+```{r}
+m %>% augment() %>%
+  features(.resid, ljung_box, lag = 10) 
+
+m %>% select(m1) %>% gg_tsresiduals()
+m %>% select(m2) %>% gg_tsresiduals()
+m %>% select(m3) %>% gg_tsresiduals()
+m %>% select(m4) %>% gg_tsresiduals()
+m %>% select(m5) %>% gg_tsresiduals()
+
+```
+Validatidy problem with m3 and m5 as the 5 value us below 0.05
+
+4. For the set of five models selected (automatically and/or manually)  examine the in-sample accuracy metrics.  Based on a holistic analysis of the information criteria select the best two ARIMA models and the ETS model. Report the model name/order and their parameter values.
+
+For model cross-validation purposes stretch the DR data as follows:
+```{r}
+D.CV <- DR %>%
+  filter(DATE >= yearmonth("2010 Jan")) %>%
+  stretch_tsibble(.init = 36, .step = 1)
+```
+```{r}
+m %>% accuracy()
+
+```
+```{r}
+m %>% accuracy()
+
+m_best = m %>% select(m2, m4, m5)
+m_best %>% glance()
+```
+Models m2, m4, m5 are the best.
+
+5. Fit cross-validation models for each of the time sub-series in the stretched data for each of the four model types selected in (4). In the case(s) where the models were automatically selected, do NOT run the automatic selection under cross validation, instead enter manually the model order/type when you call the ARIMA()/ETS() function. 
+```{r}
+mC <- D.CV %>% model(
+                 m2 = ARIMA(ELEC ~ pdq(0,0,1) ),
+                 m4 = ARIMA(ELEC ~ pdq(1,0,0)),
+                 m5 = ETS(ELEC ~  error('M') + trend('N') + season('A')))
+```
+
+
+6. Prepare a 24-month ahead forecast foe each of the models fitted in (5) and prepare a plot of MAPE vs months-ahead.  Based on the dynamic behavior of cross-validation MAPE discuss which model(s) should be kept/discarded.
+```{r warning=FALSE}
+mC %>% 
+  forecast(h = 24) %>%
+  group_by(.id, .model) %>%
+  mutate(h = row_number()) %>%
+  ungroup() -> fCV
+
+
+fCV %>%
+  accuracy(DR, by = c("h", ".model")) %>%
+  ggplot(aes(x = h, y = MAPE, color = .model)) +
+  geom_line()
+
+
+```
+Based on the cross-validation of the MAPE, models m2 and m4 should be kept as m5 continues to grow to the point it will not be a good model.
+
+7. Examine the cross-validation residuals of the models you selected in (6), and based on their correlation (model vs. model) discuss if it is advisable to prepare an ensemble forecast averaging the forecasts of two or more models.
+```{r}
+
+mC %>% augment() %>%
+  features(.resid, ljung_box, lag = 10) 
+
+mC <- D.CV %>% model(
+                 m2 = ARIMA(ELEC ~ pdq(0,0,1) ),
+                 m4 = ARIMA(ELEC ~ pdq(1,0,0)))
+```
+Not fully sure on this question, but I dont know how else to do it. 
+
+8. The index is very useful for energy planning purpose as most of the variability and seasonality is produced by combined cycle natural gas plants and single cycle peaker plants that also run on natural gas (i.e., nuclear and coal generation is fixed and relatively constant).  For this purpose it is of interest to know what is the production index level that will not be superated with a probability (service-level) of 95%. For the best model in (6) plot the 24-month ahead forecast and plot the forecast and the corresponding confidence interval to help you address the service level question. Report numerically the month-by-month the index forecasts that meet the desired 95% service level.
+```{r}
+m %>%
+  select(m2) %>%
+  forecast(h = 24) %>%
+  autoplot(DR)
+
+m %>%
+  select(m4) %>%
+  forecast(h = 24) %>%
+  autoplot(DR)
+
+
+```
+Despite my best efforts, I could not figure out how to print the values. 
+
+Happy Thanksgiving!
